@@ -2,23 +2,21 @@
 
 from .common import InfoExtractor
 from ..utils import (
+    clean_html,
     unescapeHTML,
 )
 
+import itertools
 from urllib.parse import urlencode
 
 
 class RadioKapitalBaseIE(InfoExtractor):
-    # offtopic: Kapitał did a great job with their frontend, which just works quickly after opening
-    # this just can't be compared to any commercial radio or news services.
-    # also it's the first wordpress page I don't hate.
     def _call_api(self, resource, video_id, note='Downloading JSON metadata', qs={}):
         return self._download_json(
             f'https://www.radiokapital.pl/wp-json/kapital/v1/{resource}?{urlencode(qs)}',
             video_id, note=note)
 
-    def _parse_episode(self, ep):
-        data = ep['data']
+    def _parse_episode(self, data):
         release = '%s%s%s' % (data['published'][6:11], data['published'][3:6], data['published'][:3])
         return {
             '_type': 'url_transparent',
@@ -26,7 +24,7 @@ class RadioKapitalBaseIE(InfoExtractor):
             'ie_key': 'Mixcloud',
             'id': str(data['id']),
             'title': unescapeHTML(data['title']),
-            'description': data.get('content'),
+            'description': clean_html(data.get('content')),
             'tags': [tag['name'] for tag in data['tags']],
             'release_date': release,
             'series': data['show']['title'],
@@ -42,7 +40,7 @@ class RadioKapitalIE(RadioKapitalBaseIE):
         'info_dict': {
             'id': 'radiokapital_radio-kapitał-tutaj-są-smoki-5-its-okay-to-be-immaterial-2021-05-20',
             'ext': 'm4a',
-            'title': '#5: It’s okay to be immaterial',
+            'title': '#5: It’s okay to\xa0be\xa0immaterial',
             'description': 'md5:2499da5fbfb0e88333b7d37ec8e9e4c4',
             'uploader': 'Radio Kapitał',
             'uploader_id': 'radiokapital',
@@ -67,34 +65,35 @@ class RadioKapitalShowIE(RadioKapitalBaseIE):
         'info_dict': {
             'id': '100',
             'title': 'WĘSZ',
-            'description': 'md5:9046105f7eeb03b7f01240fbed245df6',
+            'description': 'md5:3a557a1e0f31af612b0dcc85b1e0ca5c',
         },
         'playlist_mincount': 17,
     }]
 
+    def _get_episode_list(self, series_id, page_no):
+        return self._call_api(
+            'episodes', series_id,
+            f'Downloading episode list page #{page_no}', qs={
+                'show': series_id,
+                'page': page_no,
+            })
+
+    def _entries(self, series_id):
+        for page_no in itertools.count(1):
+            episode_list = self._get_episode_list(series_id, page_no)
+            yield from (self._parse_episode(ep) for ep in episode_list['items'])
+            if episode_list['next'] is None:
+                break
+
     def _real_extract(self, url):
-        video_id = self._match_id(url)
+        series_id = self._match_id(url)
 
-        page_no = 1
-        page_count = 1
-        entries = []
-        while page_no <= page_count:
-            episode_list = self._call_api(
-                'episodes', video_id,
-                f'Downloading episode list page #{page_no}', qs={
-                    'show': video_id,
-                    'page': page_no,
-                })
-            page_no += 1
-            page_count = episode_list['max']
-            for ep in episode_list['items']:
-                entries.append(self._parse_episode(ep))
-
-        show = episode_list['items'][0]['data']['show']
+        show = self._call_api(f'shows/{series_id}', series_id, 'Downloading show metadata')
+        entries = self._entries(series_id)
         return {
             '_type': 'playlist',
             'entries': entries,
             'id': str(show['id']),
             'title': show['title'],
-            'description': show['content'],
+            'description': clean_html(show.get('content')),
         }
